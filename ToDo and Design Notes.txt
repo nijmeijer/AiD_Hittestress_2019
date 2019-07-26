@@ -10,5 +10,4 @@
 
   Payloads are decoded in TTN, based on LoRa-ports
 
-
 - TTN devices aangemaakt: ttn_apeldoorn_hittestress_2019
