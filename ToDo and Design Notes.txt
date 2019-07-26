@@ -1,0 +1,14 @@
+26/7/2019
+- Switch power on dust sensor (currently wakup and sleep is used). I do not know if that is sufficiently efficient.
+- Overall power consumption
+
+- packet scheduling / timing. Currently scheduling is as follows:
+  Priority/Frequency Ratio   Description
+  LOW                  1     Position (via LoRa-port 0x0B)
+  MEDIUM               1     Vcc and Vbat (via LoRa-port 0x0C)
+  HIGH                 10    Particle density, temperature and humidity (via LoRa-port 0x0A)
+
+  Payloads are decoded in TTN, based on LoRa-ports
+
+
+- TTN devices aangemaakt: ttn_apeldoorn_hittestress_2019
