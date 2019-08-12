@@ -1,4 +1,4 @@
-/*******************************************************************************
+        /*******************************************************************************
    Copyright (c) 2016 Thomas Telkamp, Matthijs Kooijman, Bas Peschier, Harmen Zijp
    22/7/2019: Adapted for Apeldoorn-In-Data Hittestress by Alex Nijmeijer
 
@@ -20,13 +20,13 @@
 // include external libraries
 #include <SPI.h>
 #include <Wire.h>
-#include <SparkFunHTU21D.h>
 #include <AltSoftSerial.h>
 #include <NMEAGPS.h>
 #include <Adafruit_SleepyDog.h>
 #include <avr/power.h>
 #include <util/atomic.h>
-#include "SDS011.h"                  
+#include "SDS011.h"
+       
 
 #define DEBUG true
 //#define DEBUG false
@@ -46,7 +46,8 @@
 #define SW_GND_PIN     20
 #define LED_PIN        21
 #define SW_GND_SDS_PIN (8  /*D8*/)
-
+#define DHTPIN         7  		// (MM) D7 data from AM2305
+#define DHTTYPE        DHT22  	// (MM) DHT 22  (AM2305), AM2321
 
 // This sets the ratio of the battery voltage divider attached to A0,
 // below works for 100k to ground and 470k to the battery. A setting of
@@ -55,7 +56,7 @@
 // disconnected.
 #define BATTERY_DIVIDER_RATIO ((120.0 + 330.0) / 120.0)
 
-// Value in mV (nominal @ 25ºC, Vcc=3.3V)
+// Value in mV (nominal @ 25ยบC, Vcc=3.3V)
 // The temperature coefficient of the reference_voltage is neglected
 float const reference_voltage_internal = 1137.0;
 
@@ -72,7 +73,22 @@ float pm2_5, pm10;  // particle sensor
 // Sensor objects
 SDS011 sds;          // Serial Dust sensor
 NMEAGPS gps;         // Serial GNSS sensor (global navigation satellite system)
-HTU21D htu;          // I2C temp/hum sensor 
+
+// (MM) Sensor AM2305 added
+// (MM) Choose sensor type, either HTU or AM2305
+#define HTU false
+#define AM2305 true
+
+#if HTU
+  #include <SparkFunHTU21D.h>
+  HTU21D ht;                  // I2C temp/hum HTU sensor
+#endif
+
+#if AM2305
+  #include "DHT.h"
+  DHT ht(DHTPIN, DHTTYPE);    // I2C temp/hum AM2305 sensor
+#endif
+
 AltSoftSerial gpsSerial(GPS_PIN, GPS_PIN);  // Serial port for GNSS
 gps_fix gps_data;
  
@@ -86,9 +102,9 @@ unsigned char mydata_size;
 uint32_t const UPDATE_INTERVAL = 60000*2;
 uint32_t const GPS_TIMEOUT = 120000;
 
-#define UPDATE_ITERATOR_MAX 6
+#define UPDATE_ITERATOR_MAX 30  // (MM) once per hour a GPS message 
 //uint8_t update_iterator = 0; // 0 means GPS, others hum, temp, batt-levels
-uint8_t update_iterator = 2; // 0 means GPS, others hum, temp, batt-levels
+uint8_t update_iterator = 1; // 0 means GPS, others hum, temp, batt-levels
 
  
 // Function Prototypes
@@ -100,9 +116,9 @@ unsigned char AiD_add_uint16 (unsigned char idx_in, uint16_t value) ;
 void setup() {
   // when in debugging mode start serial connection
   if(DEBUG) {
-    Serial.begin(9600);
+    Serial.begin(115200);
 //    Serial.println(F("Start"));
-  }
+   }
 
   // setup LoRa transceiver
   mjs_lmic_setup();
@@ -125,7 +141,9 @@ void setup() {
 #endif
 
   // start communication to sensors
-  htu.begin();
+#if HTU
+  ht.begin();
+#endif
   gpsSerial.begin(9600);
   sds.begin(SDSrxPin, SDStxPin);                             // Software serial port for particle sensor
 }
@@ -151,7 +169,7 @@ void loop() {
   // if we sleep without calling runloop and then queue data
   // See https://github.com/lmic-lib/lmic/issues/3
   os_runloop_once();
-
+ 
   // We can now send the data
   queueData();
 
@@ -171,15 +189,21 @@ void loop() {
     Serial.println(F("ms..."));
     Serial.flush();
   }
-  doSleep(sleepDuration);
+  doSleep(sleepDuration);    
+  
   if (DEBUG) {
     Serial.println(F("Woke up."));
   }
 }
 
 void doSleep(uint32_t time) {
+
+  delay( time);    // (MM)  code below replaced by this delay
+/* (MM): during myt test there were problems with timerticks during Watchdog.sleep()
+ * (MM): not clear to me, complex code, relies on specif libs and hardware
+  
   ADCSRA &= ~(1 << ADEN);
-  power_adc_disable();
+  power_adc_disable();   // Disable the Analog to Digital Converter module.
 
   while (time > 0) {
     uint16_t slept;
@@ -207,8 +231,8 @@ void doSleep(uint32_t time) {
 
   power_adc_enable();
   ADCSRA |= (1 << ADEN);
+(MM)  */
 }
-
 
 
 
@@ -217,32 +241,43 @@ void queueData()
  // this function is "riding along" on the update_iterator. 
  // it is called after the sensor update, which increments the update_iterator. so when the update_iterator=1, the GPS was updated.
   mydata_size = 0;              // init
- if (update_iterator==1)
+  if (update_iterator==0)
   { // Compose AiD message with Location
     mydata[mydata_size++] = 0xB; // Apeldoorn In data Rev2 (send location)
     mydata_size = AiD_add_uint32(mydata_size,  (uint32_t)(lat32 & 0xFFFFFFFF));
     mydata_size = AiD_add_uint32(mydata_size,  (uint32_t)(lon32 & 0xFFFFFFFF));
-  }
-  else if (update_iterator==2)
-  { // Compose AiD message with Battery / Supply voltage status
-    mydata[mydata_size++] = 0xC; // Apeldoorn In data Rev2 (send location)
-    mydata_size = AiD_add_float(mydata_size, Vcc);
-    mydata_size = AiD_add_float(mydata_size, Vbat);
-  } else {
-  // Compose AiD message with Particle Density, humidity, temperature 
-  mydata[mydata_size++] = 0xA; // Apeldoorn In data Rev2 (added GPS, battery level)
-  mydata_size = AiD_add_uint16(mydata_size,  round(pm2_5*10.0)); // pm: 0 - 999.9  x10 = 0-10000 
-  mydata_size = AiD_add_uint16(mydata_size,  round(pm10*10.0));
-  mydata_size = AiD_add_uint16(mydata_size,  round(humidity*10));
-  mydata_size = AiD_add_uint16(mydata_size,  round(temperature*10));
+    }
+// (MM) Comment out, Vcc and Vbat moved to 0xA meesage
+//  else if (update_iterator==1)
+//  { // Compose AiD message with Battery / Supply voltage status
+//    mydata[mydata_size++] = 0xC; // Apeldoorn In data Rev2 (send location)
+//    mydata_size = AiD_add_float(mydata_size, Vcc);
+//    mydata_size = AiD_add_float(mydata_size, Vbat);
+//  }
+    else {
+    // Compose AiD message with Particle Density, humidity, temperature 
+    mydata[mydata_size++] = 0xA; // Apeldoorn In data Rev2 (added GPS, battery level)
+    mydata_size = AiD_add_uint16(mydata_size,  round(pm2_5*10.0)); // pm: 0 - 999.9  x10 = 0-10000 
+    mydata_size = AiD_add_uint16(mydata_size,  round(pm10*10.0));
+    mydata_size = AiD_add_uint16(mydata_size,  round(humidity*10));
+    mydata_size = AiD_add_uint16(mydata_size,  round(temperature*10));
+ 
+// (MM) added Vcc and Vbat
+    mydata_size = AiD_add_uint16(mydata_size, round(Vcc*100));
+    mydata_size = AiD_add_uint16(mydata_size, round(Vbat*100));
   }
 
-   LMIC_setDrTxpow(DR_SF11, 14); // sf7: hoge BPS
+  LMIC_setDrTxpow(DR_SF11, 14); // sf7: hoge BPS
   
   // Prepare upstream data transmission at the next possible time.
   LMIC_setTxData2(mydata[0], &mydata[1], mydata_size-1, 0); // packet-type as port
   Serial.println(F("Packet queued"));
 
+// (MM) update of update_iterator moved to here
+  if (update_iterator<UPDATE_ITERATOR_MAX)
+    update_iterator++;
+  else 
+    update_iterator=0;
 }
 
 // ------------------------------
@@ -260,8 +295,7 @@ float getTemperature(float oldTemp)
 
   while( i < MEASUREMENTS)
   {
-    tempTemp = htu.readTemperature();
-    
+    tempTemp = ht.readTemperature();
     if((tempTemp < MAXIMUM_TEMPERATURE) && (tempTemp > MINIMUM_TEMPERATURE))
     {
       i = MEASUREMENTS;
@@ -287,8 +321,7 @@ float getHumidity(float oldHumid)
 
   while( i < MEASUREMENTS)
   {
-    tempHumid = htu.readHumidity();
-    
+    tempHumid = ht.readHumidity();
     if((tempHumid < MAXIMUM_HUMIDITY) && (tempHumid > 0.0))
     {
       i = MEASUREMENTS;
@@ -305,17 +338,25 @@ float getHumidity(float oldHumid)
 // Particle Density
 void getParticleDensity(void)
 {
-  int error;
-  sds.wakeup();
-  delay(5000);
-  error = sds.read(&pm2_5,&pm10);
-  sds.sleep();
+ // (MM) orignal wakeup hangs the SDS011 in library version 0.0.5, 
+ // take care, use the newwakeup() in file sds011.ccp 
+  sds.newwakeup();
+  delay(5000);      // start airflow for 5 seconds
+
+// (MM) added retry, because sometimes I had read erros 
+  int error=0, i=0;
+  do { 
+    error = sds.read(&pm2_5,&pm10);
+    i++;
+  }
+  while( error && i < MEASUREMENTS);
 
   if (error) {
-    Serial.println("Error reading from Dust sensor");
+    Serial.println(F("Error reading from Dust sensor"));
     pm2_5 = -1.0;
-    pm10 = -1;
-   }
+    pm10 = -1.0;
+  }
+  sds.sleep();
 }
 
 // Position
@@ -357,7 +398,7 @@ void getPosition()
 }
 
 // Supply Voltage
-void getVcc()
+float getVcc()		// (MM) function returns float
 {
   // Read 1.1V reference against AVcc
   // set the reference to Vcc and the measurement to the internal 1.1V reference
@@ -377,44 +418,38 @@ void getVcc()
   uint8_t low  = ADCL; // must read ADCL first - it then locks ADCH714  
   uint8_t high = ADCH; // unlocks both
   uint16_t result = (high<<8) | low;
-  Vcc = (float)  1125300L / result / 1000;
+  return (float) 1125.3 / result;  // Calculate Vcc (in V); 1125.3 = 1.1*1023
 }
 
 // Battery voltage
-void getVBat()
+float getVBat()		// (MM) function returns a float
 {
   analogReference(INTERNAL);
   uint16_t reading = analogRead(VBAT_PIN);
-  Vbat = (float)1.1*reading/1023 * BATTERY_DIVIDER_RATIO;
+  return (float)1.1*reading/1023 * BATTERY_DIVIDER_RATIO;
 } 
 
-
-
+ 
 // ------------------------------
 // Acquire Sensor Data
 // ------------------------------
 void AcquireSensorData ()
 {
 
-  if (update_iterator==0)
-  {
+  if (update_iterator == 0) {
     getPosition();
-    getVcc();
-    getVBat();
+    // getVcc();  // (MM) moved 
+    // getVBat(); // (MM) moved
   } else {
     getParticleDensity(); // via softserial
-  
+
     temperature = getTemperature(temperature); // store in global variable, via I2C
+// (MM) delay added, the AM2305 gives some hum. erros, probably a slow sensor 
     humidity = getHumidity(humidity);          // store in global variable, via I2C
 
-  }
-
-
-  if (update_iterator<UPDATE_ITERATOR_MAX)
-    update_iterator++;
-  else {
-   //   sds.end();
-      update_iterator=0;
+// (MM) moved to here
+    Vcc = getVcc();	
+    Vbat = getVBat();
   }
 }
 
@@ -475,3 +510,4 @@ unsigned char AiD_add_uint16 (unsigned char idx_in, uint16_t value) {
    mydata[idx_in++] = (value) & 0xFF; // lsb
    return (idx_in);
  }
+
