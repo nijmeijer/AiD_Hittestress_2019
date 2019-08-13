@@ -20,6 +20,7 @@
 // include external libraries
 #include <SPI.h>
 #include <Wire.h>
+#include <SparkFunHTU21D.h>
 #include <AltSoftSerial.h>
 #include <NMEAGPS.h>
 #include <Adafruit_SleepyDog.h>
@@ -445,6 +446,7 @@ void AcquireSensorData ()
 
     temperature = getTemperature(temperature); // store in global variable, via I2C
 // (MM) delay added, the AM2305 gives some hum. erros, probably a slow sensor 
+    delay(1000);
     humidity = getHumidity(humidity);          // store in global variable, via I2C
 
 // (MM) moved to here
