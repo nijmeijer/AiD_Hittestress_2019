@@ -11,3 +11,15 @@
   Payloads are decoded in TTN, based on LoRa-ports
 
 - TTN devices aangemaakt: ttn_apeldoorn_hittestress_2019
+
+13/8/2019
+Tijdens het testen van mijn kartonnen prototype ben ik zo vrij geweest om lokaal enkele SW aanpassingen te doen om het systeem werkend te krijgen n.l.:
+-    De functie doSleep() gaf bij mij problemen, tijdelijk ge-bypassed met delay()
+-    Lezen van SDS011 gaf soms een fout, retry toegevoegd (analoog aan temp en hum.)
+-    De SDS library wakeup() functie werkt niet en hing de SDS011 op, deze functie vervangen door een nieuwe.
+-    In de sketch sensor AM2305 toegevoegd.
+-    Lezen van humidity gaf leesfouten, trage sensor? Delay van 1 sec toegevoegd. Misschien dat een pullupweerstand op D7 helpt.
+-    Vcc en Vbat als shorts toegevoegd in het data bericht 0xa
+-    TTN Payload decoder is aangepast, en sign bit toegevoegd t.b.v. negatieve getallen
+
+De files SDS011.cpp en SDS011.h zijn lokaal toegevoegd in daar waar de .ino file staat
