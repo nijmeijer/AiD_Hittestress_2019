@@ -9,7 +9,7 @@
    NO WARRANTY OF ANY KIND IS PROVIDED.
 
    In order to compile the following libraries need to be installed:
-   - SparkFunHTU21D: https://github.com/sparkfun/SparkFun_HTU21D_Breakout_Arduino_Library
+   - "DHT.h" (local copy, improved timing)
    - NeoGPS (mjs-specific fork): https://github.com/meetjestad/NeoGPS
    - Adafruit_SleepyDog: https://github.com/adafruit/Adafruit_SleepyDog
    - lmic (mjs-specific fork): https://github.com/meetjestad/arduino-lmic
@@ -18,25 +18,18 @@
  *******************************************************************************/
 
 // include external libraries
-#include <SPI.h>
-#include <Wire.h>
-#include <SparkFunHTU21D.h>
 #include <AltSoftSerial.h>
 #include <NMEAGPS.h>
 #include <Adafruit_SleepyDog.h>
 #include <avr/power.h>
 #include <util/atomic.h>
 #include "SDS011.h"                  
+#include "DHT.h"
 
 #define DEBUG true
 //#define DEBUG false
 
 #include "mjs_lmic.h"
-
-#define MEASUREMENTS        5
-#define MAXIMUM_TEMPERATURE 70
-#define MINIMUM_TEMPERATURE -20
-#define MAXIMUM_HUMIDITY    100.1
 
 // define various pins
 #define SDSrxPin       A3
@@ -46,6 +39,8 @@
 #define SW_GND_PIN     20
 #define LED_PIN        21
 #define SW_GND_SDS_PIN (8  /*D8*/)
+#define DHTPIN         7       
+#define DHTTYPE        DHT22    // (MM) DHT 22  (AM2305), AM2321
 
 
 // This sets the ratio of the battery voltage divider attached to A0,
@@ -55,53 +50,47 @@
 // disconnected.
 #define BATTERY_DIVIDER_RATIO ((120.0 + 330.0) / 120.0)
 
-// Value in mV (nominal @ 25ºC, Vcc=3.3V)
-// The temperature coefficient of the reference_voltage is neglected
-float const reference_voltage_internal = 1137.0;
-
-
 // Most recently read values (stored in global variables)
 float temperature;  // temperature
+float CpuTemp;
 float humidity;     // humidity
-int32_t lat32;      // GNSS lat
-int32_t lon32;      // GNSS lon
-float Vcc;          // CPU-VCC
+int32_t lat32;      // GNSS lat in deg
+int32_t lon32;      // GNSS lon in deg
+int16_t alt16;      // GNSS altitude in meters
+#ifdef GPS_FIX_HDOP
+  int16_t hdop16;     //  Horizontal Dilution of Precision
+#endif
+
 float Vbat;         // battery voltage
 float pm2_5, pm10;  // particle sensor
 
 // Sensor objects
-SDS011 sds;          // Serial Dust sensor
-NMEAGPS gps;         // Serial GNSS sensor (global navigation satellite system)
-HTU21D htu;          // I2C temp/hum sensor 
-AltSoftSerial gpsSerial(GPS_PIN, GPS_PIN);  // Serial port for GNSS
-gps_fix gps_data;
+SDS011        sds;                         // Serial Dust sensor
+NMEAGPS       gps;                         // Serial GNSS sensor (global navigation satellite system)
+DHT           ht(DHTPIN, DHTTYPE, 2);      // AM2305 sensor for temp/hum, 2:override 0/1 threshold in lib. Lib has been altered to avoid timing-issues
+AltSoftSerial gpsSerial(GPS_PIN, GPS_PIN); // Serial port for GNSS
+gps_fix       gps_data;
  
 // Lora Payload Buffer
-unsigned char mydata[20];
-unsigned char mydata_size;
-
+uint8_t mydata[15];
+uint8_t mydata_size;
 
 // setup timing variables
-//uint32_t const UPDATE_INTERVAL = 900000;
-uint32_t const UPDATE_INTERVAL = 60000*2;
-uint32_t const GPS_TIMEOUT = 120000;
+uint32_t const UPDATE_INTERVAL = (60000*2); // -7*1000; // 7: manually calibration
+uint16_t const GPS_TIMEOUT = 64000;                  // 64 secs
 
-#define UPDATE_ITERATOR_MAX 6
-//uint8_t update_iterator = 0; // 0 means GPS, others hum, temp, batt-levels
-uint8_t update_iterator = 2; // 0 means GPS, others hum, temp, batt-levels
+//#define UPDATE_ITERATOR_MAX 100
+uint16_t update_iterator_cnt = 0; // 0: default, 3: generates GPS
+uint8_t PacketType, PacketTypeNext;
 
- 
 // Function Prototypes
-unsigned char AiD_add_float (unsigned char idx_in,  float value);
 unsigned char AiD_add_uint32 (unsigned char idx_in, int value) ;
 unsigned char AiD_add_uint16 (unsigned char idx_in, uint16_t value) ;
-
 
 void setup() {
   // when in debugging mode start serial connection
   if(DEBUG) {
     Serial.begin(9600);
-//    Serial.println(F("Start"));
   }
 
   // setup LoRa transceiver
@@ -125,9 +114,13 @@ void setup() {
 #endif
 
   // start communication to sensors
-  htu.begin();
   gpsSerial.begin(9600);
   sds.begin(SDSrxPin, SDStxPin);                             // Software serial port for particle sensor
+
+  // Make sure we have the initial power-up Vbat and CpuTemp (for debugging / calibration)
+  getVBat();
+  GetCpuTemp();
+  
 }
 
 void loop() {
@@ -135,14 +128,16 @@ void loop() {
   unsigned long startMillis = millis();
 
 
-  // Activate and read our sensors (do it in a loop for debugging)
+  // Activate and read our sensors (do it in a loop for sensor debugging)
   #if 0
     while (1) {
+      Update_Iterator();
       AcquireSensorData();
       dumpSensorData();
-      delay(1000);
+      //delay(3000);
     }
   #else 
+      Update_Iterator();
       AcquireSensorData();
       dumpSensorData();
   #endif
@@ -160,15 +155,23 @@ void loop() {
   // Schedule sleep
   unsigned long msPast = millis() - startMillis;
   unsigned long sleepDuration = UPDATE_INTERVAL;
+
+  if (PacketTypeNext!=3 || PacketType!=3) sleepDuration=UPDATE_INTERVAL/2; // we are about to transmit a mid/low pri packet, or we will do so the next packet => the mid/low packet will be correctly spaced in time
+  
   if (msPast < sleepDuration)
     sleepDuration -= msPast;
   else
     sleepDuration = 0;
 
+   if(LMIC.dataLen) { // data received in rx slot after tx
+              //debug_buf(LMIC.frame+LMIC.dataBeg, LMIC.dataLen);
+              Serial.println("Data Received");
+          }
+
   if (DEBUG) {
     Serial.print(F("Sleeping for "));
-    Serial.print(sleepDuration);
-    Serial.println(F("ms..."));
+    Serial.print(sleepDuration/1000);
+    Serial.print(F("s... "));
     Serial.flush();
   }
   doSleep(sleepDuration);
@@ -209,96 +212,149 @@ void doSleep(uint32_t time) {
   ADCSRA |= (1 << ADEN);
 }
 
-
-
-
 void queueData() 
 {
- // this function is "riding along" on the update_iterator. 
- // it is called after the sensor update, which increments the update_iterator. so when the update_iterator=1, the GPS was updated.
   mydata_size = 0;              // init
- if (update_iterator==1)
-  { // Compose AiD message with Location
-    mydata[mydata_size++] = 0xB; // Apeldoorn In data Rev2 (send location)
-    mydata_size = AiD_add_uint32(mydata_size,  (uint32_t)(lat32 & 0xFFFFFFFF));
-    mydata_size = AiD_add_uint32(mydata_size,  (uint32_t)(lon32 & 0xFFFFFFFF));
-  }
-  else if (update_iterator==2)
-  { // Compose AiD message with Battery / Supply voltage status
-    mydata[mydata_size++] = 0xC; // Apeldoorn In data Rev2 (send location)
-    mydata_size = AiD_add_float(mydata_size, Vcc);
-    mydata_size = AiD_add_float(mydata_size, Vbat);
-  } else {
-  // Compose AiD message with Particle Density, humidity, temperature 
-  mydata[mydata_size++] = 0xA; // Apeldoorn In data Rev2 (added GPS, battery level)
-  mydata_size = AiD_add_uint16(mydata_size,  round(pm2_5*10.0)); // pm: 0 - 999.9  x10 = 0-10000 
-  mydata_size = AiD_add_uint16(mydata_size,  round(pm10*10.0));
-  mydata_size = AiD_add_uint16(mydata_size,  round(humidity*10));
-  mydata_size = AiD_add_uint16(mydata_size,  round(temperature*10));
-  }
+  switch (PacketType) {
+    case 1:  // Compose AiD message with Location
+              mydata[mydata_size++] = 0xB; 
+              mydata_size = AiD_add_uint32(mydata_size,  (uint32_t)(lat32 & 0xFFFFFFFF));
+              mydata_size = AiD_add_uint32(mydata_size,  (uint32_t)(lon32 & 0xFFFFFFFF));
+              mydata_size = AiD_add_uint16(mydata_size,  (uint16_t)(alt16 & 0xFFFF));
+              #ifdef GPS_FIX_HDOP
+                mydata_size = AiD_add_uint16(mydata_size,  (uint16_t)(hdop16 & 0xFFFF));
+              #else
+                mydata_size = AiD_add_uint16(mydata_size,  (uint16_t)0);
+              #endif
+              break;
 
-   LMIC_setDrTxpow(DR_SF11, 14); // sf7: hoge BPS
-  
-  // Prepare upstream data transmission at the next possible time.
-  LMIC_setTxData2(mydata[0], &mydata[1], mydata_size-1, 0); // packet-type as port
-  Serial.println(F("Packet queued"));
+     case 2:  // Apeldoorn In data Rev2 (send battery status, CPU-Temp)
+              mydata[mydata_size++] = 0xD; 
+              mydata_size = AiD_add_uint16(mydata_size, round(CpuTemp*10));
+              mydata_size = AiD_add_uint16(mydata_size, round(Vbat*100));
+              break;
+               
+     case 3:  // Compose AiD message with Particle Density, humidity, temperature 
+              mydata[mydata_size++] = 0xE; 
+              mydata_size = AiD_add_uint16(mydata_size,  round(pm2_5*10.0)); // pm: 0 - 999.9  x10 = 0-10000 
+              mydata_size = AiD_add_uint16(mydata_size,  round(pm10*10.0));
+              mydata_size = AiD_add_uint16(mydata_size,  round(humidity*10));
+              mydata_size = AiD_add_uint16(mydata_size,  round(temperature*10));
+              break;
+     default: ;// should never happen
+          
+  } // case
 
+  //LMIC_setDrTxpow(DR_SF7, 14); // sf7: hoge BPS
+    LMIC_setDrTxpow(DR_SF9, 14);
+
+    // Check if there is not a current TX/RX job running
+    if (LMIC.opmode & OP_TXRXPEND) {
+        Serial.println(F("OP_TXRXPEND, not sending"));
+    } else  {
+       // Prepare upstream data transmission at the next possible time.
+      LMIC_setTxData2(mydata[0], &mydata[1], mydata_size-1, 0); // packet-type as port
+    }
+    
+    Serial.println("Packet-type " + String(PacketType) + " queued. Size="+ String(mydata_size) +". Next type "+ String(PacketTypeNext));
 }
+
+void Update_Iterator () {
+
+  update_iterator_cnt++; // 16 bits => wraps around in 0xFFFF increments => divs below must be powers of 2, for even distribution over time
+  PacketType=3;          // default HI PRI, unless changed below
+  
+  if (update_iterator_cnt % 32 == 4) { // lowest PRI, shifted in time W.R.T. mid PRI
+   // Serial.println(F("Low Pri"));
+    PacketType=1;
+  }
+
+  if (update_iterator_cnt % 8 == 0) { // mid PRI
+    //Serial.println(F("Mid Pri"));
+    PacketType=2;
+  }
+
+  if (PacketType==3) {                // Hi PRI
+    //Serial.println(F("Hi Pri"));
+  }
+
+  PacketTypeNext = 3;
+  if ((update_iterator_cnt+1) % 32 == 4) PacketTypeNext = 1;
+  if ((update_iterator_cnt+1) % 8 == 0) PacketTypeNext = 2;
+  
+}
+
+
 
 // ------------------------------
 // Read Sensors
 // ------------------------------
 // Temperature
-/// This function prevents bogous readings from sensors.
-/// \param oldTemp Last read temperature value.
-/// \return new temperature from sensor.
 float getTemperature(float oldTemp)
 {
-  float newTemp = oldTemp;
-  float tempTemp = 0.0;
-  int i = 0;
-
-  while( i < MEASUREMENTS)
-  {
-    tempTemp = htu.readTemperature();
+  float newTemp;
+  float tempTemp; 
     
-    if((tempTemp < MAXIMUM_TEMPERATURE) && (tempTemp > MINIMUM_TEMPERATURE))
-    {
-      i = MEASUREMENTS;
-      newTemp = tempTemp;
-    }
-    else
-    {
-      i++;
-    }
-  }
+  tempTemp = ht.readTemperature();
+  // Check if any reads failed and exit early (to try again).
+  if (isnan(tempTemp)) {
+      //   Serial.println("Failed to read from DHT sensor!");
+      newTemp = oldTemp;
+     } else
+     newTemp = tempTemp;
+
   return newTemp;
 }
 
+void GetCpuTemp () 
+{
+  unsigned int wADC;
+  double t;
+
+  // The internal temperature has to be used
+  // with the internal reference of 1.1V.
+  // Channel 8 can not be selected with
+  // the analogRead function yet.
+
+  // Set the internal reference and mux.
+  ADMUX = (_BV(REFS1) | _BV(REFS0) | _BV(MUX3));
+  ADCSRA |= _BV(ADEN);  // enable the ADC
+
+  delay(20);            // wait for voltages to become stable.
+
+  ADCSRA |= _BV(ADSC);  // Start the ADC
+
+  // Detect end-of-conversion
+  while (bit_is_set(ADCSRA,ADSC));
+
+  // Reading register "ADCW" takes care of how to read ADCL and ADCH.
+  wADC = ADCW;
+
+  // The offset of 324.31 could be wrong. It is just an indication. 
+  // Calibration, assuming 1.22 scaling is correct:
+  // Assumes device is at room-temperature at first power-up
+  #define wADC_ROOMTEMP (333)
+  #define ROOMTEMP (22.0)
+  #define wADC_OFFSET (ROOMTEMP*1.22-wADC_ROOMTEMP)
+  t = (wADC + wADC_OFFSET ) / 1.22;
+  
+  Serial.println("wADC#CpuTemp=" + String(wADC));
+  CpuTemp = t;
+}
+
 // Humidity
-/// This function prevents bogous readings from sensors.
-/// \param oldHumid Last read humidity value.
-/// \return new humidity from sensor.
 float getHumidity(float oldHumid)
 {
-  float newHumid = oldHumid;
-  float tempHumid = 0.0;
-  int i = 0;
+  float newHumid ;
+  float tempHumid;
 
-  while( i < MEASUREMENTS)
-  {
-    tempHumid = htu.readHumidity();
-    
-    if((tempHumid < MAXIMUM_HUMIDITY) && (tempHumid > 0.0))
-    {
-      i = MEASUREMENTS;
+  tempHumid = ht.readHumidity(); // from manual: The minimum interval for reading sensor 2S; reading interval time is less than 2S, may lead to temperature and humidity are not allowed or communication is unsuccessful and so on.
+  if (isnan(tempHumid)) {
+       // Serial.println("Failed to read from DHT sensor!");
+       newHumid = oldHumid;
+    } else
       newHumid = tempHumid;
-    }
-    else
-    {
-      i++;
-    }
-  }
+    
   return newHumid;
 }
 
@@ -333,51 +389,44 @@ void getPosition()
 
   unsigned long startTime = millis();
   int valid = 0;
+  int valid_hdop = 1;
   while (millis() - startTime < GPS_TIMEOUT && valid < 10) {
     if (gps.available(gpsSerial)) {
       gps_data = gps.read();
-      if (gps_data.valid.location && gps_data.valid.status && gps_data.status >= gps_fix::STATUS_STD) {
+      
+      #ifdef GPS_FIX_HDOP
+        valid_hdop = gps_data.valid.hdop;
+      #endif
+      
+      if (gps_data.valid.location && gps_data.valid.altitude &&  gps_data.valid.status && valid_hdop && gps_data.status >= gps_fix::STATUS_STD) { //STATUS_STD (STATUS_DGPS wordt nooit bereikt)
         valid++;
         lat32 =(int32_t)gps_data.latitudeL() ; // * 32768 / 10000000);
-        lon32 =(int64_t)gps_data.longitudeL() ;//* 32768 / 10000000);
+        lon32 =(int32_t)gps_data.longitudeL() ;//* 32768 / 10000000);
+        alt16 = (int16_t)gps_data.altitude();
+        #ifdef GPS_FIX_HDOP
+          hdop16 = (int16_t)gps_data.hdop;
+        #endif  
       } else {
         lat32 = 0;
         lon32 = 0;
+        alt16=0;
+        #ifdef GPS_FIX_HDOP
+          hdop16 = 0;
+        #endif  
+
       }
-//      if (gps_data.valid.satellites) {
-//        Serial.print(F("#Satellites: "));
-//        Serial.println(gps_data.satellites);
-//      }
+      #if 0
+      if (gps_data.valid.satellites) {
+        Serial.print(F("#Satellites: "));
+        Serial.println(gps_data.satellites);
+      }
+      #endif
     }
   }
   digitalWrite(SW_GND_PIN, LOW);
 
   if (gps.statistics.ok == 0)
     Serial.println(F("No GPS data received, check wiring"));
-}
-
-// Supply Voltage
-void getVcc()
-{
-  // Read 1.1V reference against AVcc
-  // set the reference to Vcc and the measurement to the internal 1.1V reference
-  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-
-  // Wait a bit before measuring to stabilize the reference (or
-  // something).  The datasheet suggests that the first reading after
-  // changing the reference is inaccurate, but just doing a dummy read
-  // still gives unstable values, but this delay helps. For some reason
-  // analogRead (which can also change the reference) does not need
-  // this.
-  delay(2);
-
-  ADCSRA |= _BV(ADSC); // Start conversion
-  while (bit_is_set(ADCSRA,ADSC)); // measuring
-
-  uint8_t low  = ADCL; // must read ADCL first - it then locks ADCH714  
-  uint8_t high = ADCH; // unlocks both
-  uint16_t result = (high<<8) | low;
-  Vcc = (float)  1125300L / result / 1000;
 }
 
 // Battery voltage
@@ -395,26 +444,13 @@ void getVBat()
 // ------------------------------
 void AcquireSensorData ()
 {
-
-  if (update_iterator==0)
-  {
-    getPosition();
-    getVcc();
-    getVBat();
-  } else {
-    getParticleDensity(); // via softserial
-  
-    temperature = getTemperature(temperature); // store in global variable, via I2C
-    humidity = getHumidity(humidity);          // store in global variable, via I2C
-
-  }
-
-
-  if (update_iterator<UPDATE_ITERATOR_MAX)
-    update_iterator++;
-  else {
-   //   sds.end();
-      update_iterator=0;
+  switch (PacketType)  {
+    case 1:  getPosition();
+    case 2:  getVBat();
+             GetCpuTemp();
+    case 3:  getParticleDensity();                      // via softserial
+             temperature = getTemperature(temperature); // store in global variable, via I2C
+             humidity = getHumidity(humidity);          // store in global variable, via I2C
   }
 }
 
@@ -426,23 +462,27 @@ void dumpSensorData() {
 #if 0
   if (gps_data.valid.location && gps_data.valid.status && gps_data.status >= gps_fix::STATUS_STD) {
     Serial.print(F("lat/lon: "));
-    Serial.print(gps_data.latitudeL()/10000000.0, 6);
+    Serial.print(lat32/10000000, 6);
     Serial.print(F(","));
-    Serial.println(gps_data.longitudeL()/10000000.0, 6);
+    Serial.println(lon32/10000000, 6);
+    Serial.println(alt16);
+    #ifdef GPS_FIX_HDOP
+      Serial.println(hdop16);
+    #endif
   } else {
     Serial.println(F("No GPS fix"));
   }
 #endif
 
 #if 0
-  Serial.print("temp=" + String(temperature) + " degC ");
-  Serial.print("hum=" + String(humidity)+ " % ");
+  Serial.print("temp=" + String(temperature) + "degC  ");
+  Serial.println("hum=" + String(humidity)+ "%  ");
+  Serial.println("particles 2.5um/10um: " + String(pm2_5) + "/" + String(pm10) + " ug/m3" );
 #endif
 
 #if 0
   Serial.println("Vbat=" + String(Vbat)+ " V");
-  Serial.println("Vcc=" + String(Vcc)+ " V");
-  Serial.println("particles 2.5um/10um: " + String(pm2_5) + "/" + String(pm10) + " ug/m3" );
+  Serial.println("CpuTemp=" + String(CpuTemp) + " degC  ");
 #endif  
   Serial.flush();
 }
@@ -450,21 +490,12 @@ void dumpSensorData() {
 // ------------------------------
 // Add data-formats to packet
 // ------------------------------
-// FLOAT
-unsigned char AiD_add_float (unsigned char idx_in,  float value) { 
-  union {
-     uint32_t a_uint;
-     float a_float;
-  } convert;
-   convert.a_float = value;
-   return ( AiD_add_uint32 (idx_in, convert.a_uint));
- }
 
 // UINT32
 unsigned char AiD_add_uint32 (unsigned char idx_in, uint32_t value) { 
    for (uint8_t i=0; i<4; i++) {
      mydata[idx_in++] = (value>>24) & 0xFF; // msb 
-     value= value <<8;
+     value= value <<8;                      // shift-left
    }
    return (idx_in);
  }
@@ -472,6 +503,6 @@ unsigned char AiD_add_uint32 (unsigned char idx_in, uint32_t value) {
  // UINT16
 unsigned char AiD_add_uint16 (unsigned char idx_in, uint16_t value) { 
    mydata[idx_in++] = (value>>8) & 0xFF; // msb 
-   mydata[idx_in++] = (value) & 0xFF; // lsb
+   mydata[idx_in++] = (value) & 0xFF;    // lsb
    return (idx_in);
  }

@@ -22,7 +22,7 @@
 
 // Try transmission for up to 60 seconds (this includes joining)
 const uint32_t TX_TIMEOUT = 60000;
-//const uint32_t TX_TIMEOUT = 60000*5;
+//const uint32_t TX_TIMEOUT = 20000;
 
 #include <lmic.h>
 #include <hal/hal.h>
@@ -102,7 +102,7 @@ void onEvent (ev_t ev) {
         // Let join start at SF9, since that's what we'll be using for
         // transmission anyway
         //LMIC_setDrTxpow(DR_SF9, 14);
-        LMIC_setDrTxpow(DR_SF12, 14);
+        LMIC_setDrTxpow(DR_SF9, 14);
         
         Serial.println(F("EV_JOINING"));
         break;
@@ -120,25 +120,30 @@ void onEvent (ev_t ev) {
       case EV_REJOIN_FAILED:
         Serial.println(F("EV_REJOIN_FAILED"));
         break;
-        break;
+        //break;
       case EV_TXCOMPLETE:
         Serial.println(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
+        if(LMIC.dataLen) { // data received in rx slot after tx
+              //debug_buf(LMIC.frame+LMIC.dataBeg, LMIC.dataLen);
+              Serial.println("Data Received 1");
+          }
+
         break;
       case EV_LOST_TSYNC:
-        //Serial.println(F("EV_LOST_TSYNC"));
+        Serial.println(F("EV_LOST_TSYNC"));
         break;
       case EV_RESET:
         Serial.println(F("EV_RESET"));
         break;
       case EV_RXCOMPLETE:
         // data received in ping slot
-        //Serial.println(F("EV_RXCOMPLETE"));
+        Serial.println(F("EV_RXCOMPLETE"));
         break;
       case EV_LINK_DEAD:
-       // Serial.println(F("EV_LINK_DEAD"));
+        Serial.println(F("EV_LINK_DEAD"));
         break;
       case EV_LINK_ALIVE:
-        //Serial.println(F("EV_LINK_ALIVE"));
+        Serial.println(F("EV_LINK_ALIVE"));
         break;
       default:
         Serial.println(F("Unknown event"));
@@ -158,6 +163,7 @@ void printHex(const __FlashStringHelper *prefix, uint8_t *buf, size_t len) {
 }
 
 void mjs_lmic_setup() {
+  //Serial.println("OSSCAL CPU="+String(OSCCAL));
   // Check whether the layout of the EEPROM is correct
   uint32_t hash = eeprom_read_dword(0x00);
   if (hash != EEPROM_LAYOUT_MAGIC && hash != EEPROM_LAYOUT_MAGIC_OLD) {
@@ -165,16 +171,29 @@ void mjs_lmic_setup() {
 
     while (true) /* nothing */;
   }
-
   // Old magic indicates the bootloader did not handle OSCCAL yet, so we
   // need to load it from EEPROM
   if (hash == EEPROM_LAYOUT_MAGIC_OLD) {
     // Write OSCCAL from EEPROM
     uint8_t osccal_byte = eeprom_read_byte((uint8_t*)EEPROM_OSCCAL_START);
     if (osccal_byte != 0xff) {
-       OSCCAL = osccal_byte;  
+       OSCCAL = osccal_byte;
+    //Serial.println("OSSCAL EEPROM="+String(osccal_byte));
     }
   }
+  //Serial.println("OSSCAL CPU="+String(OSCCAL));
+  //OSCCAL=0x7F; // serial fails
+  //OSCCAL=0x40; // serial fails
+  //OSCCAL=0x80; // serial fails
+  //OSCCAL=0x80+0x40; // serial fails
+  //OSCCAL=0x80+0x60; // serial fails
+  //OSCCAL=0x80+0x20; // serial soms fout
+  //OSCCAL=0x80+0x30; // serial goed
+  //OSCCAL=0x80+0x38; // serial fout
+  //OSCCAL=0x80+0x34; // serial goed
+  //OSCCAL=0x80+0x2A; // default eeprom : 104.0 us/bit @ uart => eeprom was accurate
+  //OSCCAL=0x80+0x2A-2; // default eeprom : 105.6 us/bit @ uart
+  //OSCCAL=0x80+0x2A-1; // default eeprom : 104.8 us/bit @ uart
 
   uint8_t buf[EEPROM_APP_KEY_LEN];
   os_getArtEui(buf);
@@ -205,6 +224,7 @@ void mjs_lmic_setup() {
   // your network here (unless your network autoconfigures them).
   // Setting up channels should happen after LMIC_setSession, as that
   // configures the minimal channel set.
+  #if 0
   LMIC_setupChannel(0, 868100000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);      // g-band
   LMIC_setupChannel(1, 868300000, DR_RANGE_MAP(DR_SF12, DR_SF7B), BAND_CENTI);      // g-band
   LMIC_setupChannel(2, 868500000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);      // g-band
@@ -214,13 +234,14 @@ void mjs_lmic_setup() {
   LMIC_setupChannel(6, 867700000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);      // g-band
   LMIC_setupChannel(7, 867900000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);      // g-band
   LMIC_setupChannel(8, 868800000, DR_RANGE_MAP(DR_FSK,  DR_FSK),  BAND_MILLI);      // g2-band
+  #endif
   // TTN defines an additional channel at 869.525Mhz using SF9 for class B
   // devices' ping slots. LMIC does not have an easy way to define set this
   // frequency and support for class B is spotty and untested, so this
   // frequency is not configured here.
 
   // Let LMIC compensate for +/- 2% clock error
-  LMIC_setClockError(MAX_CLOCK_ERROR * 5 / 100);  // was 2
+  LMIC_setClockError(MAX_CLOCK_ERROR * 2 / 100);  // was 2
 }
 
 void mjs_lmic_wait_for_txcomplete() {
