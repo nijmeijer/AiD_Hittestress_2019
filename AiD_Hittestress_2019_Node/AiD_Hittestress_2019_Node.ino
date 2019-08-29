@@ -76,7 +76,7 @@ uint8_t mydata[15];
 uint8_t mydata_size;
 
 // setup timing variables
-uint32_t const UPDATE_INTERVAL = (60000*2); // -7*1000; // 7: manually calibration
+uint32_t const UPDATE_INTERVAL = (60000*2-8*1000); //  3: manually calibrated
 uint16_t const GPS_TIMEOUT = 64000;                  // 64 secs
 
 //#define UPDATE_ITERATOR_MAX 100
@@ -98,12 +98,12 @@ void setup() {
 
   // setup switched ground and power down connected peripherals (GPS module)
   pinMode(SW_GND_PIN, OUTPUT);
-  digitalWrite(SW_GND_PIN, LOW);
-  digitalWrite(SW_GND_PIN, HIGH); // gnd closed
+  digitalWrite(SW_GND_PIN, LOW); // initially, GPS is disabled
+//  digitalWrite(SW_GND_PIN, HIGH); // gnd closed
 
-  pinMode(SW_GND_SDS_PIN, OUTPUT);
-  digitalWrite(SW_GND_SDS_PIN, LOW);
-  digitalWrite(SW_GND_SDS_PIN, HIGH); // gnd closed
+//  pinMode(SW_GND_SDS_PIN, OUTPUT);
+//  digitalWrite(SW_GND_SDS_PIN, LOW);
+//  digitalWrite(SW_GND_SDS_PIN, HIGH); // gnd closed
 
   // blink 'hello'
 #if 0
@@ -362,7 +362,7 @@ float getHumidity(float oldHumid)
 void getParticleDensity(void)
 {
   int error;
-  sds.wakeup();
+  sds.newwakeup();
   delay(5000);
   error = sds.read(&pm2_5,&pm10);
   sds.sleep();

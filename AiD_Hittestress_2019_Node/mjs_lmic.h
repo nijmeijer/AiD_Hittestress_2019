@@ -101,7 +101,6 @@ void onEvent (ev_t ev) {
       case EV_JOINING:
         // Let join start at SF9, since that's what we'll be using for
         // transmission anyway
-        //LMIC_setDrTxpow(DR_SF9, 14);
         LMIC_setDrTxpow(DR_SF9, 14);
         
         Serial.println(F("EV_JOINING"));
@@ -109,6 +108,7 @@ void onEvent (ev_t ev) {
       case EV_JOINED:
         Serial.println(F("EV_JOINED"));
         // Disable link check validation
+
         LMIC_setLinkCheckMode(0);
         break;
       case EV_RFU1:
@@ -182,18 +182,6 @@ void mjs_lmic_setup() {
     }
   }
   //Serial.println("OSSCAL CPU="+String(OSCCAL));
-  //OSCCAL=0x7F; // serial fails
-  //OSCCAL=0x40; // serial fails
-  //OSCCAL=0x80; // serial fails
-  //OSCCAL=0x80+0x40; // serial fails
-  //OSCCAL=0x80+0x60; // serial fails
-  //OSCCAL=0x80+0x20; // serial soms fout
-  //OSCCAL=0x80+0x30; // serial goed
-  //OSCCAL=0x80+0x38; // serial fout
-  //OSCCAL=0x80+0x34; // serial goed
-  //OSCCAL=0x80+0x2A; // default eeprom : 104.0 us/bit @ uart => eeprom was accurate
-  //OSCCAL=0x80+0x2A-2; // default eeprom : 105.6 us/bit @ uart
-  //OSCCAL=0x80+0x2A-1; // default eeprom : 104.8 us/bit @ uart
 
   uint8_t buf[EEPROM_APP_KEY_LEN];
   os_getArtEui(buf);
@@ -224,7 +212,7 @@ void mjs_lmic_setup() {
   // your network here (unless your network autoconfigures them).
   // Setting up channels should happen after LMIC_setSession, as that
   // configures the minimal channel set.
-  #if 0
+  #if 1
   LMIC_setupChannel(0, 868100000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);      // g-band
   LMIC_setupChannel(1, 868300000, DR_RANGE_MAP(DR_SF12, DR_SF7B), BAND_CENTI);      // g-band
   LMIC_setupChannel(2, 868500000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);      // g-band
@@ -241,7 +229,7 @@ void mjs_lmic_setup() {
   // frequency is not configured here.
 
   // Let LMIC compensate for +/- 2% clock error
-  LMIC_setClockError(MAX_CLOCK_ERROR * 2 / 100);  // was 2
+  LMIC_setClockError(MAX_CLOCK_ERROR * 5 / 100);   // changed 2->5
 }
 
 void mjs_lmic_wait_for_txcomplete() {
