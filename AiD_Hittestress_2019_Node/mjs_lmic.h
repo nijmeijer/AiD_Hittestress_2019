@@ -22,7 +22,10 @@
 
 // Try transmission for up to 60 seconds (this includes joining)
 const uint32_t TX_TIMEOUT = 60000;
-//const uint32_t TX_TIMEOUT = 20000;
+//extern uint16_t update_iterator_cnt;
+
+#define LED_PIN        21
+
 
 #include <lmic.h>
 #include <hal/hal.h>
@@ -108,8 +111,16 @@ void onEvent (ev_t ev) {
       case EV_JOINED:
         Serial.println(F("EV_JOINED"));
         // Disable link check validation
-
         LMIC_setLinkCheckMode(0);
+
+        pinMode(LED_PIN, OUTPUT);
+        for (uint8_t i=0; i<10; i++) {
+          digitalWrite(LED_PIN, HIGH);
+          delay(200);
+          digitalWrite(LED_PIN, LOW);
+          delay(100);
+        }
+        
         break;
       case EV_RFU1:
         //Serial.println(F("EV_RFU1"));
@@ -120,14 +131,8 @@ void onEvent (ev_t ev) {
       case EV_REJOIN_FAILED:
         Serial.println(F("EV_REJOIN_FAILED"));
         break;
-        //break;
       case EV_TXCOMPLETE:
         Serial.println(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
-        if(LMIC.dataLen) { // data received in rx slot after tx
-              //debug_buf(LMIC.frame+LMIC.dataBeg, LMIC.dataLen);
-              Serial.println("Data Received 1");
-          }
-
         break;
       case EV_LOST_TSYNC:
         Serial.println(F("EV_LOST_TSYNC"));
@@ -227,6 +232,10 @@ void mjs_lmic_setup() {
   // devices' ping slots. LMIC does not have an easy way to define set this
   // frequency and support for class B is spotty and untested, so this
   // frequency is not configured here.
+
+   LMIC_setAdrMode(1);
+   LMIC_setLinkCheckMode(1);
+
 
   // Let LMIC compensate for +/- 2% clock error
   LMIC_setClockError(MAX_CLOCK_ERROR * 5 / 100);   // changed 2->5

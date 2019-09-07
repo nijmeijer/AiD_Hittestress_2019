@@ -1,4 +1,4 @@
-/*******************************************************************************
+  /*******************************************************************************
    Copyright (c) 2016 Thomas Telkamp, Matthijs Kooijman, Bas Peschier, Harmen Zijp
    22/7/2019: Adapted for Apeldoorn-In-Data Hittestress by Alex Nijmeijer
 
@@ -7,6 +7,8 @@
    to do whatever they want with them without any restriction,
    including, but not limited to, copying, modification and redistribution.
    NO WARRANTY OF ANY KIND IS PROVIDED.
+
+   MeetJeStad board setup : https://github.com/meetjestad/mjs_boards/raw/master/package_meetjestad.net_index.json
 
    In order to compile the following libraries need to be installed:
    - "DHT.h" (local copy, improved timing)
@@ -76,11 +78,11 @@ uint8_t mydata[15];
 uint8_t mydata_size;
 
 // setup timing variables
-uint32_t const UPDATE_INTERVAL = (60000*2-8*1000); //  3: manually calibrated
+//uint32_t const UPDATE_INTERVAL = (60000*2-8*1000); //  3: manually calibrated
+uint16_t update_interval_secs=120;
 uint16_t const GPS_TIMEOUT = 64000;                  // 64 secs
 
-//#define UPDATE_ITERATOR_MAX 100
-uint16_t update_iterator_cnt = 0; // 0: default, 3: generates GPS
+uint16_t update_iterator_cnt = 0; // 0: , 3: generates GPS
 uint8_t PacketType, PacketTypeNext;
 
 // Function Prototypes
@@ -152,29 +154,50 @@ void loop() {
 
   mjs_lmic_wait_for_txcomplete();
 
+  // check for received UPLINK data
+  //if (LMIC.dataLen != 0 || LMIC.dataBeg != 0)  {
+   if(LMIC.dataLen != 0) { // data received in rx slot after tx
+              Serial.print(F("Data Received @port "));
+              Serial.print(LMIC.frame[LMIC.dataBeg-1]);
+              Serial.print(F("="));
+              Serial.print(LMIC.frame[LMIC.dataBeg]);
+              Serial.print(F(" "));
+              Serial.println(LMIC.frame[LMIC.dataBeg+1]);
+              
+              switch (LMIC.frame[LMIC.dataBeg-1]) { // port
+                case 2 : update_interval_secs = LMIC.frame[LMIC.dataBeg] | (LMIC.frame[LMIC.dataBeg+1]<<8);
+                         Serial.println(update_interval_secs);
+                         update_iterator_cnt = 0;
+                         break;
+
+                case 3 : update_iterator_cnt = 0;
+                        break;
+            }
+          }
+
   // Schedule sleep
   unsigned long msPast = millis() - startMillis;
-  unsigned long sleepDuration = UPDATE_INTERVAL;
+  unsigned long sleepDuration = (unsigned long)update_interval_secs*1000; //UPDATE_INTERVAL;
+  
+  if (PacketTypeNext!=3 || PacketType!=3) sleepDuration=(unsigned long)update_interval_secs*500; //UPDATE_INTERVAL/2; // we are about to transmit a mid/low pri packet, or we will do so the next packet => the mid/low packet will be correctly spaced in time
 
-  if (PacketTypeNext!=3 || PacketType!=3) sleepDuration=UPDATE_INTERVAL/2; // we are about to transmit a mid/low pri packet, or we will do so the next packet => the mid/low packet will be correctly spaced in time
+  Serial.println("Uncompensated interval: " + String((unsigned long)sleepDuration));
+   
   
   if (msPast < sleepDuration)
     sleepDuration -= msPast;
   else
     sleepDuration = 0;
 
-   if(LMIC.dataLen) { // data received in rx slot after tx
-              //debug_buf(LMIC.frame+LMIC.dataBeg, LMIC.dataLen);
-              Serial.println("Data Received");
-          }
+
 
   if (DEBUG) {
     Serial.print(F("Sleeping for "));
-    Serial.print(sleepDuration/1000);
-    Serial.print(F("s... "));
+    Serial.print(sleepDuration);
+    Serial.print(F("ms... "));
     Serial.flush();
   }
-  doSleep(sleepDuration);
+  doSleep(sleepDuration*95/60);
   if (DEBUG) {
     Serial.println(F("Woke up."));
   }
@@ -190,7 +213,7 @@ void doSleep(uint32_t time) {
       slept = Watchdog.sleep(time);
     else
       slept = Watchdog.sleep(8000);
-
+#if 0
     // Update the millis() and micros() counters, so duty cycle
     // calculations remain correct. This is a hack, fiddling with
     // Arduino's internal variables, which is needed until
@@ -202,7 +225,7 @@ void doSleep(uint32_t time) {
       // timer0 uses a /64 prescaler and overflows every 256 timer ticks
       timer0_overflow_count += microsecondsToClockCycles((uint32_t)slept * 1000) / (64 * 256);
     }
-
+#endif
     if (slept >= time)
       break;
     time -= slept;
@@ -264,7 +287,7 @@ void Update_Iterator () {
   update_iterator_cnt++; // 16 bits => wraps around in 0xFFFF increments => divs below must be powers of 2, for even distribution over time
   PacketType=3;          // default HI PRI, unless changed below
   
-  if (update_iterator_cnt % 32 == 4) { // lowest PRI, shifted in time W.R.T. mid PRI
+  if (update_iterator_cnt % 128 == 4) { // lowest PRI, shifted in time W.R.T. mid PRI
    // Serial.println(F("Low Pri"));
     PacketType=1;
   }
@@ -338,7 +361,8 @@ void GetCpuTemp ()
   #define wADC_OFFSET (ROOMTEMP*1.22-wADC_ROOMTEMP)
   t = (wADC + wADC_OFFSET ) / 1.22;
   
-  Serial.println("wADC#CpuTemp=" + String(wADC));
+  Serial.print(F("wADC#CpuTemp="));
+  Serial.println(String(wADC));
   CpuTemp = t;
 }
 
@@ -363,12 +387,12 @@ void getParticleDensity(void)
 {
   int error;
   sds.newwakeup();
-  delay(5000);
+  delay(10000);
   error = sds.read(&pm2_5,&pm10);
   sds.sleep();
 
   if (error) {
-    Serial.println("Error reading from Dust sensor");
+    Serial.println(F("Error reading from Dust sensor"));
     pm2_5 = -1.0;
     pm10 = -1;
    }
@@ -475,14 +499,14 @@ void dumpSensorData() {
 #endif
 
 #if 0
-  Serial.print("temp=" + String(temperature) + "degC  ");
-  Serial.println("hum=" + String(humidity)+ "%  ");
-  Serial.println("particles 2.5um/10um: " + String(pm2_5) + "/" + String(pm10) + " ug/m3" );
+  Serial.print(F("temp=") + String(temperature) + "degC  ");
+  Serial.println(F("hum=") + String(humidity)+ "%  ");
+  Serial.println(F("particles 2.5um/10um: ") + String(pm2_5) + "/" + String(pm10) + " ug/m3" );
 #endif
 
 #if 0
-  Serial.println("Vbat=" + String(Vbat)+ " V");
-  Serial.println("CpuTemp=" + String(CpuTemp) + " degC  ");
+  Serial.println(F("Vbat=") + String(Vbat)+ " V");
+  Serial.println(F("CpuTemp=") + String(CpuTemp) + " degC  ");
 #endif  
   Serial.flush();
 }
