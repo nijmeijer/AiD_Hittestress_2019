@@ -12,11 +12,13 @@
 
    In order to compile the following libraries need to be installed:
    - "DHT.h" (local copy, improved timing)
-   - NeoGPS (mjs-specific fork): https://github.com/meetjestad/NeoGPS
+   - NeoGPS (mjs-specific fork): https://github.com/meetjestad/NeoGPS see also project-specific config-file in libraries zip
    - Adafruit_SleepyDog: https://github.com/adafruit/Adafruit_SleepyDog
-   - lmic (mjs-specific fork): https://github.com/meetjestad/arduino-lmic
+   - lmic https://github.com/matthijskooijman/arduino-lmic 1.5.0+arduino-2
    - SDS011 by Rajko Zschiegner 
    - AltSoftSerial
+
+   - Arduino-IDE version 1.8.9 (1.8.10 failed on linker-issues related to LMIC)
  *******************************************************************************/
 
 // include external libraries
@@ -53,9 +55,9 @@
 #define BATTERY_DIVIDER_RATIO ((120.0 + 330.0) / 120.0)
 
 // Most recently read values (stored in global variables)
-float temperature;  // temperature
-float CpuTemp;
-float humidity;     // humidity
+float temperature;  // outside-temperature
+float CpuTemp;      // cpu-temperature
+float humidity;     // outside-humidity
 int32_t lat32;      // GNSS lat in deg
 int32_t lon32;      // GNSS lon in deg
 int16_t alt16;      // GNSS altitude in meters
@@ -78,9 +80,11 @@ uint8_t mydata[15];
 uint8_t mydata_size;
 
 // setup timing variables
-//uint32_t const UPDATE_INTERVAL = (60000*2-8*1000); //  3: manually calibrated
-uint16_t update_interval_secs=120;
-uint16_t const GPS_TIMEOUT = 64000;                  // 64 secs
+uint16_t update_interval_secs=120; 
+//uint16_t update_interval_secs=120*120/85*120/115*120/117; // 120 sec
+
+uint8_t  dust_delay_secs = 5;
+uint16_t const GPS_TIMEOUT = 120000;                  // 120 secs
 
 uint16_t update_iterator_cnt = 0; // 0: , 3: generates GPS
 uint8_t PacketType, PacketTypeNext;
@@ -92,7 +96,8 @@ unsigned char AiD_add_uint16 (unsigned char idx_in, uint16_t value) ;
 void setup() {
   // when in debugging mode start serial connection
   if(DEBUG) {
-    Serial.begin(9600);
+    //Serial.begin(9600);
+    Serial.begin(115200);
   }
 
   // setup LoRa transceiver
@@ -128,7 +133,10 @@ void setup() {
 void loop() {
   // We need to calculate how long we should sleep, so we need to know how long we were awake
   unsigned long startMillis = millis();
-
+  Serial.print(F("Time-loop-entry "));
+  Serial.print(millis() / 1000);
+  Serial.println(F(" sec "));
+  
 
   // Activate and read our sensors (do it in a loop for sensor debugging)
   #if 0
@@ -155,8 +163,7 @@ void loop() {
   mjs_lmic_wait_for_txcomplete();
 
   // check for received UPLINK data
-  //if (LMIC.dataLen != 0 || LMIC.dataBeg != 0)  {
-   if(LMIC.dataLen != 0) { // data received in rx slot after tx
+  if(LMIC.dataLen != 0) { // data received in rx slot after tx
               Serial.print(F("Data Received @port "));
               Serial.print(LMIC.frame[LMIC.dataBeg-1]);
               Serial.print(F("="));
@@ -169,21 +176,30 @@ void loop() {
                          Serial.println(update_interval_secs);
                          update_iterator_cnt = 0;
                          break;
-
-                case 3 : update_iterator_cnt = 0;
+                case 3 : if (LMIC.frame[LMIC.dataBeg]>1 and LMIC.frame[LMIC.dataBeg]<50) // in range?
+                         {
+                           dust_delay_secs = LMIC.frame[LMIC.dataBeg] ;
+                           Serial.println(dust_delay_secs);
+                           update_iterator_cnt = 0;
+                         }
+                         break;
+                case 4 : update_iterator_cnt = 0;
                         break;
             }
           }
 
+
   // Schedule sleep
-  unsigned long msPast = millis() - startMillis;
   unsigned long sleepDuration = (unsigned long)update_interval_secs*1000; //UPDATE_INTERVAL;
-  
   if (PacketTypeNext!=3 || PacketType!=3) sleepDuration=(unsigned long)update_interval_secs*500; //UPDATE_INTERVAL/2; // we are about to transmit a mid/low pri packet, or we will do so the next packet => the mid/low packet will be correctly spaced in time
 
-  Serial.println("Uncompensated interval: " + String((unsigned long)sleepDuration));
-   
-  
+  Serial.print(F("Uncompensated interval: ")); 
+  Serial.println((unsigned long)sleepDuration);
+  sleepDuration = sleepDuration *181/120;
+  Serial.print(F("Scaled interval: ")); 
+  Serial.println((unsigned long)sleepDuration);
+ 
+  unsigned long msPast = millis() - startMillis;
   if (msPast < sleepDuration)
     sleepDuration -= msPast;
   else
@@ -192,12 +208,19 @@ void loop() {
 
 
   if (DEBUG) {
+    Serial.print(F("Time "));
+    Serial.print(millis() / 1000);
+    Serial.println(F(" sec "));
+  
+    
     Serial.print(F("Sleeping for "));
     Serial.print(sleepDuration);
     Serial.print(F("ms... "));
     Serial.flush();
   }
-  doSleep(sleepDuration*95/60);
+
+  
+  doSleep(sleepDuration);
   if (DEBUG) {
     Serial.println(F("Woke up."));
   }
@@ -213,7 +236,7 @@ void doSleep(uint32_t time) {
       slept = Watchdog.sleep(time);
     else
       slept = Watchdog.sleep(8000);
-#if 0
+#if 1
     // Update the millis() and micros() counters, so duty cycle
     // calculations remain correct. This is a hack, fiddling with
     // Arduino's internal variables, which is needed until
@@ -279,7 +302,8 @@ void queueData()
       LMIC_setTxData2(mydata[0], &mydata[1], mydata_size-1, 0); // packet-type as port
     }
     
-    Serial.println("Packet-type " + String(PacketType) + " queued. Size="+ String(mydata_size) +". Next type "+ String(PacketTypeNext));
+    Serial.println(("Packet-type ") + String(PacketType) + (" queued. Size=")+ String(mydata_size) + (". Next type ")+ String(PacketTypeNext));
+     
 }
 
 void Update_Iterator () {
@@ -321,7 +345,7 @@ float getTemperature(float oldTemp)
   tempTemp = ht.readTemperature();
   // Check if any reads failed and exit early (to try again).
   if (isnan(tempTemp)) {
-      //   Serial.println("Failed to read from DHT sensor!");
+      Serial.println(F("Failed to read from DHT sensor!"));
       newTemp = oldTemp;
      } else
      newTemp = tempTemp;
@@ -374,7 +398,7 @@ float getHumidity(float oldHumid)
 
   tempHumid = ht.readHumidity(); // from manual: The minimum interval for reading sensor 2S; reading interval time is less than 2S, may lead to temperature and humidity are not allowed or communication is unsuccessful and so on.
   if (isnan(tempHumid)) {
-       // Serial.println("Failed to read from DHT sensor!");
+       Serial.println(F("Failed to read from DHT sensor!"));
        newHumid = oldHumid;
     } else
       newHumid = tempHumid;
@@ -386,8 +410,12 @@ float getHumidity(float oldHumid)
 void getParticleDensity(void)
 {
   int error;
+  uint16_t dust_delay_ms;
+  
+  dust_delay_ms = dust_delay_secs * 1000;
+  
   sds.newwakeup();
-  delay(10000);
+  delay(dust_delay_ms);
   error = sds.read(&pm2_5,&pm10);
   sds.sleep();
 
@@ -431,15 +459,15 @@ void getPosition()
           hdop16 = (int16_t)gps_data.hdop;
         #endif  
       } else {
-        lat32 = 0;
-        lon32 = 0;
-        alt16=0;
-        #ifdef GPS_FIX_HDOP
-          hdop16 = 0;
-        #endif  
+        //lat32 = 0;
+        //lon32 = 0;
+        //alt16=0;
+        //#ifdef GPS_FIX_HDOP
+        //  hdop16 = 0;
+        //#endif  
 
       }
-      #if 0
+      #if 1
       if (gps_data.valid.satellites) {
         Serial.print(F("#Satellites: "));
         Serial.println(gps_data.satellites);
@@ -499,9 +527,9 @@ void dumpSensorData() {
 #endif
 
 #if 0
-  Serial.print(F("temp=") + String(temperature) + "degC  ");
-  Serial.println(F("hum=") + String(humidity)+ "%  ");
-  Serial.println(F("particles 2.5um/10um: ") + String(pm2_5) + "/" + String(pm10) + " ug/m3" );
+  Serial.print(F("temp=") + String(temperature) + F("degC  "));
+  Serial.println(F("hum=") + String(humidity)+ F("%  "));
+  Serial.println(F("particles 2.5um/10um: ") + String(pm2_5) + F("/") + String(pm10) + F(" ug/m3") );
 #endif
 
 #if 0
