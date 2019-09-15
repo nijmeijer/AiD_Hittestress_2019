@@ -238,7 +238,7 @@ void mjs_lmic_setup() {
 
 
   // Let LMIC compensate for +/- 2% clock error
-  LMIC_setClockError(MAX_CLOCK_ERROR * 5 / 100);   // changed 2->5
+  LMIC_setClockError(MAX_CLOCK_ERROR * 10 / 100);   // changed 2->5
 }
 
 void mjs_lmic_wait_for_txcomplete() {
@@ -246,10 +246,10 @@ void mjs_lmic_wait_for_txcomplete() {
   uint32_t start = millis();
   while(waitingForEvent && millis() - start < TX_TIMEOUT)
     os_runloop_once();
-  // if (DEBUG) {
+    if (DEBUG) {
     if (waitingForEvent)
       Serial.println(F("Transmit timeout"));
-   // else
-   //   Serial.println(F("Transmit complete"));
- // }
+    else
+      Serial.println(F("Transmit complete"));
+   }
 }
