@@ -23,6 +23,7 @@
 
 // include external libraries
 #include <AltSoftSerial.h>
+
 #include <NMEAGPS.h>
 #include <Adafruit_SleepyDog.h>
 #include <avr/power.h>
