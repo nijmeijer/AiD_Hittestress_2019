@@ -78,11 +78,11 @@ gps_fix       gps_data;
 // Lora Payload Buffer
 uint8_t mydata[15];
 uint8_t mydata_size;
+uint8_t uplink_data[2];
+uint8_t uplink_port=0;
 
 // setup timing variables
 uint16_t update_interval_secs=120; 
-//uint16_t update_interval_secs=120*120/85*120/115*120/117; // 120 sec
-
 uint8_t  dust_delay_secs = 5;
 uint16_t const GPS_TIMEOUT = 120000;                  // 120 secs
 
@@ -106,11 +106,6 @@ void setup() {
   // setup switched ground and power down connected peripherals (GPS module)
   pinMode(SW_GND_PIN, OUTPUT);
   digitalWrite(SW_GND_PIN, LOW); // initially, GPS is disabled
-//  digitalWrite(SW_GND_PIN, HIGH); // gnd closed
-
-//  pinMode(SW_GND_SDS_PIN, OUTPUT);
-//  digitalWrite(SW_GND_SDS_PIN, LOW);
-//  digitalWrite(SW_GND_SDS_PIN, HIGH); // gnd closed
 
   // blink 'hello'
 #if 0
@@ -163,22 +158,22 @@ void loop() {
   mjs_lmic_wait_for_txcomplete();
 
   // check for received UPLINK data
-  if(LMIC.dataLen != 0) { // data received in rx slot after tx
+  if (uplink_port != 0) {
               Serial.print(F("Data Received @port "));
-              Serial.print(LMIC.frame[LMIC.dataBeg-1]);
+              Serial.print(uplink_port);
               Serial.print(F("="));
-              Serial.print(LMIC.frame[LMIC.dataBeg]);
+              Serial.print(uplink_data[0]);
               Serial.print(F(" "));
-              Serial.println(LMIC.frame[LMIC.dataBeg+1]);
-              
-              switch (LMIC.frame[LMIC.dataBeg-1]) { // port
-                case 2 : update_interval_secs = LMIC.frame[LMIC.dataBeg] | (LMIC.frame[LMIC.dataBeg+1]<<8);
+              Serial.println(uplink_data[1]);
+                
+              switch (uplink_port) { // port
+                case 2 : update_interval_secs = uplink_data[0] | (uplink_data[1]<<8);
                          Serial.println(update_interval_secs);
                          update_iterator_cnt = 0;
                          break;
-                case 3 : if (LMIC.frame[LMIC.dataBeg]>1 and LMIC.frame[LMIC.dataBeg]<50) // in range?
+                case 3 : if ( uplink_data[0]>1 and  uplink_data[0]<50) // in range?
                          {
-                           dust_delay_secs = LMIC.frame[LMIC.dataBeg] ;
+                           dust_delay_secs = uplink_data[0] ;
                            Serial.println(dust_delay_secs);
                            update_iterator_cnt = 0;
                          }
@@ -186,6 +181,7 @@ void loop() {
                 case 4 : update_iterator_cnt = 0;
                         break;
             }
+            uplink_port = 0;
           }
 
 
@@ -316,7 +312,7 @@ void Update_Iterator () {
     PacketType=1;
   }
 
-  if (update_iterator_cnt % 8 == 0) { // mid PRI
+  if (update_iterator_cnt % 8 == 0) { // mid PRI // 8
     //Serial.println(F("Mid Pri"));
     PacketType=2;
   }
@@ -434,8 +430,8 @@ void getPosition()
   memset(&gps_data, 0, sizeof(gps_data));
   gps.reset();
   gps.statistics.init();
-
-  digitalWrite(SW_GND_PIN, HIGH);
+  pinMode(SW_GND_PIN, OUTPUT);
+  digitalWrite(SW_GND_PIN, HIGH); // HIGH: enable GPS (LOW causes error message later on)
   if (DEBUG)
     Serial.println(F("Waiting for GPS..."));
 

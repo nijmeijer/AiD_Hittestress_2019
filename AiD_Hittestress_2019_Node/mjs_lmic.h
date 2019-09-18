@@ -22,7 +22,8 @@
 
 // Try transmission for up to 60 seconds (this includes joining)
 const uint32_t TX_TIMEOUT = 60000;
-//extern uint16_t update_iterator_cnt;
+extern uint8_t uplink_data[2];
+extern uint8_t uplink_port;
 
 #define LED_PIN        21
 
@@ -133,6 +134,11 @@ void onEvent (ev_t ev) {
         break;
       case EV_TXCOMPLETE:
         Serial.println(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
+        if(LMIC.dataLen != 0) {
+          uplink_port = LMIC.frame[LMIC.dataBeg-1];
+          uplink_data[0] = LMIC.frame[LMIC.dataBeg];
+          uplink_data[1] = LMIC.frame[LMIC.dataBeg+1];
+        }
         break;
       case EV_LOST_TSYNC:
         Serial.println(F("EV_LOST_TSYNC"));
@@ -233,8 +239,8 @@ void mjs_lmic_setup() {
   // frequency and support for class B is spotty and untested, so this
   // frequency is not configured here.
 
-   LMIC_setAdrMode(1);
-   LMIC_setLinkCheckMode(1);
+  // LMIC_setAdrMode(1);
+ //  LMIC_setLinkCheckMode(1);
 
 
   // Let LMIC compensate for +/- 2% clock error
