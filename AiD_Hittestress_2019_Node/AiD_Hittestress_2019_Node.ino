@@ -46,6 +46,7 @@
 #define SW_GND_SDS_PIN (8  /*D8*/)
 #define DHTPIN         7       
 #define DHTTYPE        DHT22    // (MM) DHT 22  (AM2305), AM2321
+#define LOW_BAT_PIN    5
 
 
 // This sets the ratio of the battery voltage divider attached to A0,
@@ -67,6 +68,7 @@ int16_t alt16;      // GNSS altitude in meters
 #endif
 
 float Vbat;         // battery voltage
+uint8_t LowBat = 0;
 float pm2_5, pm10;  // particle sensor
 
 // Sensor objects
@@ -187,8 +189,16 @@ void loop() {
 
 
   // Schedule sleep
+  // default sleep
   unsigned long sleepDuration = (unsigned long)update_interval_secs*1000; //UPDATE_INTERVAL;
-  if (PacketTypeNext!=3 || PacketType!=3) sleepDuration=(unsigned long)update_interval_secs*500; //UPDATE_INTERVAL/2; // we are about to transmit a mid/low pri packet, or we will do so the next packet => the mid/low packet will be correctly spaced in time
+  
+  // extend SleepDuration when the battery is low
+  if (LowBat==1) sleepDuration=sleepDuration*10;
+  
+  // if we are about to, or have just sent a special packet, split the sleepduration into two
+  if (PacketTypeNext!=3 || PacketType!=3) sleepDuration=(unsigned long)sleepDuration/2; //UPDATE_INTERVAL/2; // we are about to transmit a mid/low pri packet, or we will do so the next packet => the mid/low packet will be correctly spaced in time
+
+
 
   Serial.print(F("Uncompensated interval: ")); 
   Serial.println((unsigned long)sleepDuration);
@@ -233,7 +243,7 @@ void doSleep(uint32_t time) {
       slept = Watchdog.sleep(time);
     else
       slept = Watchdog.sleep(8000);
-#if 1
+ 
     // Update the millis() and micros() counters, so duty cycle
     // calculations remain correct. This is a hack, fiddling with
     // Arduino's internal variables, which is needed until
@@ -245,7 +255,7 @@ void doSleep(uint32_t time) {
       // timer0 uses a /64 prescaler and overflows every 256 timer ticks
       timer0_overflow_count += microsecondsToClockCycles((uint32_t)slept * 1000) / (64 * 256);
     }
-#endif
+ 
     if (slept >= time)
       break;
     time -= slept;
@@ -275,6 +285,7 @@ void queueData()
               mydata[mydata_size++] = 0xD; 
               mydata_size = AiD_add_uint16(mydata_size, round(CpuTemp*10));
               mydata_size = AiD_add_uint16(mydata_size, round(Vbat*100));
+              mydata[mydata_size++] = (LowBat) & 0xFF;   
               break;
                
      case 3:  // Compose AiD message with Particle Density, humidity, temperature 
@@ -484,20 +495,28 @@ void getVBat()
   analogReference(INTERNAL);
   uint16_t reading = analogRead(VBAT_PIN);
   Vbat = (float)1.1*reading/1023 * BATTERY_DIVIDER_RATIO;
+  
+  if (digitalRead(LOW_BAT_PIN) != 0)
+    LowBat=0;
+  else 
+    LowBat=1;
 } 
 
 
 
 // ------------------------------
 // Acquire Sensor Data
+// battery-intensive are only performed when the battery is now low
 // ------------------------------
 void AcquireSensorData ()
 {
   switch (PacketType)  {
-    case 1:  getPosition();
+    case 1:  if (LowBat==0)
+               getPosition();
     case 2:  getVBat();
              GetCpuTemp();
-    case 3:  getParticleDensity();                      // via softserial
+    case 3:  if (LowBat==0)
+               getParticleDensity();                      // via softserial
              temperature = getTemperature(temperature); // store in global variable, via I2C
              humidity = getHumidity(humidity);          // store in global variable, via I2C
   }
