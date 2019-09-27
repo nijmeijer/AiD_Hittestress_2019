@@ -30,6 +30,7 @@
 #include <util/atomic.h>
 #include "SDS011.h"                  
 #include "DHT.h"
+#include "version.h"
 
 #define DEBUG true
 //#define DEBUG false
@@ -68,7 +69,7 @@ int16_t alt16;      // GNSS altitude in meters
 #endif
 
 float Vbat;         // battery voltage
-uint8_t LowBat = 0;
+uint8_t LowBat;
 float pm2_5, pm10;  // particle sensor
 
 // Sensor objects
@@ -82,14 +83,16 @@ gps_fix       gps_data;
 uint8_t mydata[15];
 uint8_t mydata_size;
 uint8_t uplink_data[2];
-uint8_t uplink_port=0;
+uint8_t uplink_port;
+uint8_t JoinedStatus;
+
 
 // setup timing variables
-uint16_t update_interval_secs=120; 
-uint8_t  dust_delay_secs = 5;
+uint16_t update_interval_secs; 
+uint8_t  dust_delay_secs ;
 uint16_t const GPS_TIMEOUT = 120000;                  // 120 secs
 
-uint16_t update_iterator_cnt = 0; // 0: , 3: generates GPS
+uint16_t update_iterator_cnt; // 0: , 3: generates GPS
 uint8_t PacketType, PacketTypeNext;
 
 // Function Prototypes
@@ -99,33 +102,47 @@ unsigned char AiD_add_uint16 (unsigned char idx_in, uint16_t value) ;
 void setup() {
   // when in debugging mode start serial connection
   if(DEBUG) {
-    //Serial.begin(9600);
     Serial.begin(115200);
   }
+ 
+  // we expect the a high battery load here. Bat will indicate low here for a short while.
+  if (digitalRead(LOW_BAT_PIN) == 0)
+    LowBat=10;
+  else
+    LowBat=0;
+  
+  JoinedStatus = 0;
+  uplink_port = 0;
+  update_interval_secs = 120; 
+  dust_delay_secs = 5;
+  update_iterator_cnt = 0; // 0: , 3: generates GPS
+    
+  // start communication to sensors
+  gpsSerial.begin(9600);
+  sds.begin(SDSrxPin, SDStxPin);                             // Software serial port for particle sensor
+  sds.sleep();
 
-  // setup LoRa transceiver
-  mjs_lmic_setup();
-
+ 
   // setup switched ground and power down connected peripherals (GPS module)
   pinMode(SW_GND_PIN, OUTPUT);
   digitalWrite(SW_GND_PIN, LOW); // initially, GPS is disabled
 
+  
+  // setup LoRa transceiver
+  mjs_lmic_setup();
+
+  
   // blink 'hello'
-#if 0
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);
-  delay(500);
-  digitalWrite(LED_PIN, LOW);
-#endif
-
-  // start communication to sensors
-  gpsSerial.begin(9600);
-  sds.begin(SDSrxPin, SDStxPin);                             // Software serial port for particle sensor
-
+  #if 0
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(LED_PIN, LOW);
+  #endif
+ 
   // Make sure we have the initial power-up Vbat and CpuTemp (for debugging / calibration)
   getVBat();
   GetCpuTemp();
-  
 }
 
 void loop() {
@@ -135,7 +152,6 @@ void loop() {
   Serial.print(millis() / 1000);
   Serial.println(F(" sec "));
   
-
   // Activate and read our sensors (do it in a loop for sensor debugging)
   #if 0
     while (1) {
@@ -145,10 +161,18 @@ void loop() {
       //delay(3000);
     }
   #else 
-      Update_Iterator();
-      AcquireSensorData();
-      dumpSensorData();
+      if (JoinedStatus==1) {
+        Update_Iterator();
+        AcquireSensorData();
+        dumpSensorData();
+      }
   #endif
+
+  if (LowBat>0)
+    LowBat = LowBat-1;
+  Serial.print(F("Low Bat: "));
+  Serial.println(LowBat);
+  
   
   // Work around a race condition in LMIC, that is greatly amplified
   // if we sleep without calling runloop and then queue data
@@ -193,8 +217,10 @@ void loop() {
   unsigned long sleepDuration = (unsigned long)update_interval_secs*1000; //UPDATE_INTERVAL;
   
   // extend SleepDuration when the battery is low
-  if (LowBat==1) sleepDuration=sleepDuration*10;
-  
+  if (LowBat>0) {
+    sleepDuration=sleepDuration*10;
+    Serial.println(F("PowerSaving mode")); 
+  }
   // if we are about to, or have just sent a special packet, split the sleepduration into two
   if (PacketTypeNext!=3 || PacketType!=3) sleepDuration=(unsigned long)sleepDuration/2; //UPDATE_INTERVAL/2; // we are about to transmit a mid/low pri packet, or we will do so the next packet => the mid/low packet will be correctly spaced in time
 
@@ -243,6 +269,13 @@ void doSleep(uint32_t time) {
       slept = Watchdog.sleep(time);
     else
       slept = Watchdog.sleep(8000);
+
+ 
+   // we expect the higest battery load here. Bat will indicate low here for a short while.
+   if (digitalRead(LOW_BAT_PIN) == 0)
+    LowBat=10;
+
+     
  
     // Update the millis() and micros() counters, so duty cycle
     // calculations remain correct. This is a hack, fiddling with
@@ -269,8 +302,11 @@ void queueData()
 {
   mydata_size = 0;              // init
   switch (PacketType) {
+    case 0:  mydata[mydata_size++] = 0; // dummy packet
+    
     case 1:  // Compose AiD message with Location
               mydata[mydata_size++] = 0xB; 
+ 
               mydata_size = AiD_add_uint32(mydata_size,  (uint32_t)(lat32 & 0xFFFFFFFF));
               mydata_size = AiD_add_uint32(mydata_size,  (uint32_t)(lon32 & 0xFFFFFFFF));
               mydata_size = AiD_add_uint16(mydata_size,  (uint16_t)(alt16 & 0xFFFF));
@@ -279,6 +315,8 @@ void queueData()
               #else
                 mydata_size = AiD_add_uint16(mydata_size,  (uint16_t)0);
               #endif
+              mydata[mydata_size++] = SW_VERSION  & 0xFF;   
+
               break;
 
      case 2:  // Apeldoorn In data Rev2 (send battery status, CPU-Temp)
@@ -423,6 +461,11 @@ void getParticleDensity(void)
   dust_delay_ms = dust_delay_secs * 1000;
   
   sds.newwakeup();
+  
+  // we expect the higest battery load here. Bat will indicate low here for a short while.
+  if (digitalRead(LOW_BAT_PIN) == 0)
+    LowBat=10;
+  
   delay(dust_delay_ms);
   error = sds.read(&pm2_5,&pm10);
   sds.sleep();
@@ -444,6 +487,11 @@ void getPosition()
   gps.statistics.init();
   pinMode(SW_GND_PIN, OUTPUT);
   digitalWrite(SW_GND_PIN, HIGH); // HIGH: enable GPS (LOW causes error message later on)
+
+  // check BAT_LOW
+  if (digitalRead(LOW_BAT_PIN) == 0)
+    LowBat=10;
+ 
   if (DEBUG)
     Serial.println(F("Waiting for GPS..."));
 
@@ -466,15 +514,7 @@ void getPosition()
         #ifdef GPS_FIX_HDOP
           hdop16 = (int16_t)gps_data.hdop;
         #endif  
-      } else {
-        //lat32 = 0;
-        //lon32 = 0;
-        //alt16=0;
-        //#ifdef GPS_FIX_HDOP
-        //  hdop16 = 0;
-        //#endif  
-
-      }
+      } 
       #if 1
       if (gps_data.valid.satellites) {
         Serial.print(F("#Satellites: "));
@@ -496,10 +536,7 @@ void getVBat()
   uint16_t reading = analogRead(VBAT_PIN);
   Vbat = (float)1.1*reading/1023 * BATTERY_DIVIDER_RATIO;
   
-  if (digitalRead(LOW_BAT_PIN) != 0)
-    LowBat=0;
-  else 
-    LowBat=1;
+  
 } 
 
 

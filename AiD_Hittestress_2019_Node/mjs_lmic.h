@@ -24,6 +24,7 @@
 const uint32_t TX_TIMEOUT = 60000;
 extern uint8_t uplink_data[2];
 extern uint8_t uplink_port;
+extern uint8_t JoinedStatus;
 
 #define LED_PIN        21
 
@@ -108,6 +109,7 @@ void onEvent (ev_t ev) {
         LMIC_setDrTxpow(DR_SF9, 14);
         
         Serial.println(F("EV_JOINING"));
+        JoinedStatus = 0;
         break;
       case EV_JOINED:
         Serial.println(F("EV_JOINED"));
@@ -121,7 +123,7 @@ void onEvent (ev_t ev) {
           digitalWrite(LED_PIN, LOW);
           delay(100);
         }
-        
+        JoinedStatus = 1;
         break;
       case EV_RFU1:
         //Serial.println(F("EV_RFU1"));
@@ -239,7 +241,7 @@ void mjs_lmic_setup() {
   // frequency and support for class B is spotty and untested, so this
   // frequency is not configured here.
 
-  // LMIC_setAdrMode(1);
+  LMIC_setAdrMode(0);
  //  LMIC_setLinkCheckMode(1);
 
 
