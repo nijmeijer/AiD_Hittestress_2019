@@ -91,6 +91,9 @@ uint8_t JoinedStatus;
 uint16_t update_interval_secs; 
 uint8_t  dust_delay_secs ;
 uint16_t const GPS_TIMEOUT = 120000;                  // 120 secs
+uint8_t dust_num_meas = 1;
+uint8_t dust_interval_delay_secs =0;
+
 
 uint16_t update_iterator_cnt; // 0: , 3: generates GPS
 uint8_t PacketType, PacketTypeNext;
@@ -148,9 +151,9 @@ void setup() {
 void loop() {
   // We need to calculate how long we should sleep, so we need to know how long we were awake
   unsigned long startMillis = millis();
-  Serial.print(F("Time-loop-entry "));
-  Serial.print(millis() / 1000);
-  Serial.println(F(" sec "));
+  //Serial.print(F("Time-loop-entry "));
+  //Serial.print(millis() / 1000);
+  //Serial.println(F(" sec "));
   
   // Activate and read our sensors (do it in a loop for sensor debugging)
   #if 0
@@ -207,6 +210,13 @@ void loop() {
                          break;
                 case 4 : update_iterator_cnt = 0;
                         break;
+                case 5: if ( uplink_data[0]>1 and  uplink_data[0]<10) // in range?
+                        {
+                          dust_interval_delay_secs  = uplink_data[0];
+                          dust_num_meas             = uplink_data[1];
+                          Serial.println(dust_interval_delay_secs);
+                          Serial.println(dust_num_meas);
+                         } 
             }
             uplink_port = 0;
           }
@@ -431,8 +441,8 @@ void GetCpuTemp ()
   #define wADC_OFFSET (ROOMTEMP*1.22-wADC_ROOMTEMP)
   t = (wADC + wADC_OFFSET ) / 1.22;
   
-  Serial.print(F("wADC#CpuTemp="));
-  Serial.println(String(wADC));
+  //Serial.print(F("wADC#CpuTemp="));
+  //Serial.println(String(wADC));
   CpuTemp = t;
 }
 
@@ -455,8 +465,10 @@ float getHumidity(float oldHumid)
 // Particle Density
 void getParticleDensity(void)
 {
-  int error;
+  int      error;
   uint16_t dust_delay_ms;
+  float    pm10_tmp, pm2_5_tmp;
+  uint8_t  dust_meas_cnt;
   
   dust_delay_ms = dust_delay_secs * 1000;
   
@@ -465,15 +477,32 @@ void getParticleDensity(void)
   // we expect the higest battery load here. Bat will indicate low here for a short while.
   if (digitalRead(LOW_BAT_PIN) == 0)
     LowBat=10;
+
+  
   
   delay(dust_delay_ms);
-  error = sds.read(&pm2_5,&pm10);
+  dust_meas_cnt = 0;
+  pm2_5=0;
+  pm10=0;
+  error=0;
+  while (not(error) && (dust_meas_cnt<dust_num_meas)) {
+     error |= sds.read(&pm2_5_tmp,&pm10_tmp);
+     delay(dust_interval_delay_secs*1000);
+      pm2_5 += pm2_5_tmp;
+      pm10  += pm10_tmp;
+      dust_meas_cnt++;
+      Serial.println(("Dust meas #") + String(dust_meas_cnt) + " "+String(pm10_tmp) +" " + String(pm10)  );
+  }
+  
   sds.sleep();
 
   if (error) {
     Serial.println(F("Error reading from Dust sensor"));
     pm2_5 = -1.0;
     pm10 = -1;
+   } else {
+    pm2_5 = pm2_5 / dust_num_meas;
+    pm10 = pm10 / dust_num_meas;
    }
 }
 
