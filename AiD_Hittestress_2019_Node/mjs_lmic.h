@@ -19,6 +19,8 @@
 #define EEPROM_DEV_EUI_LEN 8
 #define EEPROM_APP_KEY_START (EEPROM_DEV_EUI_START + EEPROM_DEV_EUI_LEN)
 #define EEPROM_APP_KEY_LEN 16
+#define EEPROM_AID_HITTE_START (EEPROM_APP_KEY_START + EEPROM_APP_KEY_LEN)
+#define EEPROM_AID_HITTE_LEN 5
 
 // Try transmission for up to 60 seconds (this includes joining)
 const uint32_t TX_TIMEOUT = 60000;

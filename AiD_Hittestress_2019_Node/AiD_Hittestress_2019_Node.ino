@@ -28,6 +28,7 @@
 #include <Adafruit_SleepyDog.h>
 #include <avr/power.h>
 #include <util/atomic.h>
+#include <avr/eeprom.h>
 #include "SDS011.h"                  
 #include "DHT.h"
 #include "version.h"
@@ -91,8 +92,8 @@ uint8_t JoinedStatus;
 uint16_t update_interval_secs; 
 uint8_t  dust_delay_secs ;
 uint16_t const GPS_TIMEOUT = 120000;                  // 120 secs
-uint8_t dust_num_meas = 1;
-uint8_t dust_interval_delay_secs =0;
+uint8_t dust_num_meas;
+uint8_t dust_interval_delay_secs;
 
 
 uint16_t update_iterator_cnt; // 0: , 3: generates GPS
@@ -116,8 +117,29 @@ void setup() {
   
   JoinedStatus = 0;
   uplink_port = 0;
-  update_interval_secs = 120; 
-  dust_delay_secs = 5;
+  if  (eeprom_read_byte((uint8_t*)EEPROM_AID_HITTE_START) == 0xA3) {
+     update_interval_secs      = eeprom_read_word((uint16_t*)EEPROM_AID_HITTE_START+1);
+     dust_interval_delay_secs  = eeprom_read_byte((uint8_t*)EEPROM_AID_HITTE_START+5);
+     dust_num_meas             = eeprom_read_byte((uint8_t*)EEPROM_AID_HITTE_START+6);
+     dust_delay_secs           = eeprom_read_byte((uint8_t*)EEPROM_AID_HITTE_START+7);
+  } else {
+    update_interval_secs = 120; 
+    dust_delay_secs = 5;
+    dust_num_meas = 1;
+    dust_interval_delay_secs=0;
+  }
+  Serial.print(F("Tupdate: ")); 
+  Serial.println(update_interval_secs);
+  Serial.print(F("TDust_del: ")); 
+  Serial.println(dust_interval_delay_secs);
+  Serial.print(F("Dust_num_meas: ")); 
+  Serial.println(dust_num_meas);
+  Serial.print(F("dust_delay_secs: ")); 
+  Serial.println(dust_delay_secs);
+ 
+  Serial.print(F("SW-ver: ")); 
+  Serial.println(SW_VERSION);
+  
   update_iterator_cnt = 0; // 0: , 3: generates GPS
     
   // start communication to sensors
@@ -173,8 +195,8 @@ void loop() {
 
   if (LowBat>0)
     LowBat = LowBat-1;
-  Serial.print(F("Low Bat: "));
-  Serial.println(LowBat);
+  //Serial.print(F("Low Bat: "));
+  //Serial.println(LowBat);
   
   
   // Work around a race condition in LMIC, that is greatly amplified
@@ -189,36 +211,41 @@ void loop() {
 
   // check for received UPLINK data
   if (uplink_port != 0) {
-              Serial.print(F("Data Received @port "));
-              Serial.print(uplink_port);
-              Serial.print(F("="));
-              Serial.print(uplink_data[0]);
-              Serial.print(F(" "));
-              Serial.println(uplink_data[1]);
+              //Serial.print(F("Data Received @port "));
+              //Serial.print(uplink_port);
+              //Serial.print(F("="));
+              //Serial.print(uplink_data[0]);
+              //Serial.print(F(" "));
+              //Serial.println(uplink_data[1]);
                 
               switch (uplink_port) { // port
                 case 2 : update_interval_secs = uplink_data[0] | (uplink_data[1]<<8);
-                         Serial.println(update_interval_secs);
+                         //Serial.println(update_interval_secs);
                          update_iterator_cnt = 0;
                          break;
                 case 3 : if ( uplink_data[0]>1 and  uplink_data[0]<50) // in range?
                          {
                            dust_delay_secs = uplink_data[0] ;
-                           Serial.println(dust_delay_secs);
+                           //Serial.println(dust_delay_secs);
                            update_iterator_cnt = 0;
                          }
                          break;
                 case 4 : update_iterator_cnt = 0;
                         break;
-                case 5: if ( uplink_data[0]>1 and  uplink_data[0]<10) // in range?
+                case 5: if ( uplink_data[0]>0 and  uplink_data[0]<10) // in range?
                         {
                           dust_interval_delay_secs  = uplink_data[0];
                           dust_num_meas             = uplink_data[1];
-                          Serial.println(dust_interval_delay_secs);
-                          Serial.println(dust_num_meas);
-                         } 
+                          //Serial.println(dust_interval_delay_secs);
+                          //Serial.println(dust_num_meas);
+                         }
             }
             uplink_port = 0;
+            eeprom_write_word((uint16_t*)EEPROM_AID_HITTE_START+1,update_interval_secs);
+            eeprom_write_byte((uint8_t*) EEPROM_AID_HITTE_START+5,dust_interval_delay_secs);
+            eeprom_write_byte((uint8_t*) EEPROM_AID_HITTE_START+6,dust_num_meas);
+            eeprom_write_byte((uint8_t*) EEPROM_AID_HITTE_START+7,dust_delay_secs);
+            eeprom_write_byte((uint8_t*) EEPROM_AID_HITTE_START, 0xA3);
           }
 
 
@@ -236,11 +263,11 @@ void loop() {
 
 
 
-  Serial.print(F("Uncompensated interval: ")); 
-  Serial.println((unsigned long)sleepDuration);
+  //Serial.print(F("Uncompensated interval: ")); 
+  //Serial.println((unsigned long)sleepDuration);
   sleepDuration = sleepDuration *181/120;
-  Serial.print(F("Scaled interval: ")); 
-  Serial.println((unsigned long)sleepDuration);
+  //Serial.print(F("Scaled interval: ")); 
+  //Serial.println((unsigned long)sleepDuration);
  
   unsigned long msPast = millis() - startMillis;
   if (msPast < sleepDuration)
@@ -486,8 +513,8 @@ void getParticleDensity(void)
   pm10=0;
   error=0;
   while (not(error) && (dust_meas_cnt<dust_num_meas)) {
-     error |= sds.read(&pm2_5_tmp,&pm10_tmp);
-     delay(dust_interval_delay_secs*1000);
+      delay(dust_interval_delay_secs*1000);
+      error |= sds.read(&pm2_5_tmp,&pm10_tmp);
       pm2_5 += pm2_5_tmp;
       pm10  += pm10_tmp;
       dust_meas_cnt++;
@@ -546,8 +573,8 @@ void getPosition()
       } 
       #if 1
       if (gps_data.valid.satellites) {
-        Serial.print(F("#Satellites: "));
-        Serial.println(gps_data.satellites);
+        //Serial.print(F("#Satellites: "));
+        //Serial.println(gps_data.satellites);
       }
       #endif
     }
