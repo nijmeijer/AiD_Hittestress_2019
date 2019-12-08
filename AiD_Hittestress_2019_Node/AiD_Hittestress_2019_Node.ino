@@ -124,8 +124,8 @@ void setup() {
      dust_delay_secs           = eeprom_read_byte((uint8_t*)EEPROM_AID_HITTE_START+7);
   } else {
     update_interval_secs = 120; 
-    dust_delay_secs = 5;
-    dust_num_meas = 1;
+    dust_delay_secs = 4;
+    dust_num_meas = 5;
     dust_interval_delay_secs=1;
   }
   Serial.print(F("Tupdate: ")); 
