@@ -126,7 +126,7 @@ void setup() {
     update_interval_secs = 120; 
     dust_delay_secs = 5;
     dust_num_meas = 1;
-    dust_interval_delay_secs=0;
+    dust_interval_delay_secs=1;
   }
   Serial.print(F("Tupdate: ")); 
   Serial.println(update_interval_secs);
